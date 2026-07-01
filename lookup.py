@@ -60,16 +60,40 @@ def _lni_session() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
 
-def _lni_search(opener, search_cat: str, search_text: str, page_size: int = 25) -> dict:
-    """Core search. Returns the raw 'd' dict from Controller.aspx/Search."""
-    headers = {"User-Agent": UA}
+def _warmup_session(opener: urllib.request.OpenerDirector) -> None:
+    """Prime the ASP.NET session (3 round-trips, one-time cost).
 
-    # Step 1: load default.aspx to prime cookies
+    The L&I site requires an ASP.NET_SessionId cookie before search calls
+    return results. This establishes it. A warmed opener can be reused for
+    as many _do_search() calls as needed without repeating this setup.
+    """
+    headers = {"User-Agent": UA}
     req = urllib.request.Request(f"{VERIFY_BASE}/default.aspx", headers=headers)
     with opener.open(req, timeout=15) as r:
         r.read()
 
-    # Step 2: build the searchDto as default.js would
+    warmup_url = f"{VERIFY_BASE}/Results.aspx#init"
+    req2 = urllib.request.Request(warmup_url, headers=headers)
+    with opener.open(req2, timeout=15) as r:
+        r.read()
+
+    req3 = urllib.request.Request(
+        f"{VERIFY_BASE}/SessionHandler.aspx",
+        data=json.dumps({"hash": warmup_url}).encode(),
+        headers={
+            **headers,
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": warmup_url,
+        },
+    )
+    with opener.open(req3, timeout=15) as r:
+        r.read()
+
+
+def _do_search(opener: urllib.request.OpenerDirector, search_cat: str, search_text: str, page_size: int = 25) -> dict:
+    """Run one search against an already-warmed session opener."""
+    headers = {"User-Agent": UA}
     search_dto = {
         "pageNumber": 0,
         "SearchType": 2,
@@ -84,30 +108,8 @@ def _lni_search(opener, search_cat: str, search_text: str, page_size: int = 25) 
         search_cat: search_text,  # critical: named field matching searchCat
         "firstSearch": 1,
     }
-
     results_url = f"{VERIFY_BASE}/Results.aspx#{urllib.parse.quote(json.dumps(search_dto))}"
-
-    # Step 3: load Results.aspx (establishes session context)
-    req2 = urllib.request.Request(results_url, headers=headers)
-    with opener.open(req2, timeout=15) as r:
-        r.read()
-
-    # Step 4: POST SessionHandler.aspx
-    req3 = urllib.request.Request(
-        f"{VERIFY_BASE}/SessionHandler.aspx",
-        data=json.dumps({"hash": results_url}).encode(),
-        headers={
-            **headers,
-            "Content-Type": "application/json; charset=UTF-8",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": results_url,
-        },
-    )
-    with opener.open(req3, timeout=15) as r:
-        r.read()
-
-    # Step 5: POST Controller.aspx/Search
-    req4 = urllib.request.Request(
+    req = urllib.request.Request(
         f"{VERIFY_BASE}/Controller.aspx/Search",
         data=json.dumps({"dtoSrch": search_dto}).encode(),
         headers={
@@ -118,8 +120,14 @@ def _lni_search(opener, search_cat: str, search_text: str, page_size: int = 25) 
             "Referer": results_url,
         },
     )
-    with opener.open(req4, timeout=15) as r:
+    with opener.open(req, timeout=15) as r:
         return json.loads(r.read())["d"]
+
+
+def _lni_search(opener: urllib.request.OpenerDirector, search_cat: str, search_text: str, page_size: int = 25) -> dict:
+    """Warmup + search in one call (convenience wrapper for single lookups)."""
+    _warmup_session(opener)
+    return _do_search(opener, search_cat, search_text, page_size)
 
 
 def _normalize_status(row: dict) -> str:
@@ -183,60 +191,60 @@ def lookup(query: str) -> dict:
             "results": [],
         }
 
+    return _build_result(query, search_cat, data)
+
+
+def batch_lookup(queries: list[str]) -> list[dict]:
+    """Look up multiple contractors, sharing one session across all searches.
+
+    Saves 3 round-trips per query after the first. Reads from a list;
+    CLI --batch mode reads from stdin. Each result includes the input query.
+    """
+    opener = _lni_session()
+    try:
+        _warmup_session(opener)
+    except Exception as e:
+        return [{"action": "refine", "input": q, "message": f"Could not reach WA L&I: {e}", "results": []} for q in queries]
+
+    results = []
+    for query in queries:
+        query = query.strip()
+        if not query or len(query) < 2:
+            results.append({"action": "reject", "input": query, "message": "Query must be at least 2 characters.", "results": []})
+            continue
+        search_cat, search_text = _detect_input_type(query)
+        try:
+            data = _do_search(opener, search_cat, search_text)
+        except Exception as e:
+            results.append({"action": "refine", "input": query, "message": f"Search failed: {e}", "results": []})
+            continue
+        results.append(_build_result(query, search_cat, data))
+    return results
+
+
+def _build_result(query: str, search_cat: str, data: dict) -> dict:
+    """Build the lookup() result dict from raw API data (shared by single + batch paths)."""
     total = data.get("TotalCount", 0)
     rows = data.get("SearchResult", [])
 
     if total == 0:
-        return {
-            "action": "none",
-            "message": f"No WA contractor/license found for '{query}'.",
-            "input": query,
-            "search_type": search_cat,
-            "results": [],
-        }
+        return {"action": "none", "message": f"No WA contractor/license found for '{query}'.", "input": query, "search_type": search_cat, "results": []}
 
     results = [_format_result(r) for r in rows]
 
-    # Exact match: LicenseId/Ubi search with exactly 1 result, or Name exact match
     if search_cat in ("LicenseId", "Ubi") and total == 1:
         r = results[0]
-        return {
-            "action": "found",
-            "message": f"{r['business_name']} — {r['contractor_type']} — {r['status']}",
-            "input": query,
-            "search_type": search_cat,
-            "total_found": total,
-            "results": results,
-        }
+        return {"action": "found", "message": f"{r['business_name']} — {r['contractor_type']} — {r['status']}", "input": query, "search_type": search_cat, "total_found": total, "results": results}
 
-    # Name search: check for strong match
     if search_cat == "Name":
         q_upper = query.upper()
         exact = [r for r in results if r["business_name"].upper() == q_upper]
         if exact and len(exact) == 1:
             r = exact[0]
-            return {
-                "action": "found",
-                "message": f"{r['business_name']} — {r['contractor_type']} — {r['status']}",
-                "input": query,
-                "search_type": search_cat,
-                "total_found": total,
-                "results": exact,
-            }
+            return {"action": "found", "message": f"{r['business_name']} — {r['contractor_type']} — {r['status']}", "input": query, "search_type": search_cat, "total_found": total, "results": exact}
 
-    # Multiple matches
     showing = min(len(results), 25)
-    return {
-        "action": "pick",
-        "message": (
-            f"Found {total} contractors matching '{query}'. "
-            f"Showing {showing}. Refine with a more specific name or use license_id."
-        ),
-        "input": query,
-        "search_type": search_cat,
-        "total_found": total,
-        "results": results,
-    }
+    return {"action": "pick", "message": f"Found {total} contractors matching '{query}'. Showing {showing}. Refine with a more specific name or use license_id.", "input": query, "search_type": search_cat, "total_found": total, "results": results}
 
 
 EXIT_CODES = {"found": 0, "pick": 1, "none": 1, "refine": 1, "reject": 2}
@@ -328,16 +336,25 @@ def main():
     args = sys.argv[1:]
     pipe_mode = "--pipe" in args
     schema_mode = "--schema" in args
-    args = [a for a in args if a not in ("--pipe", "--schema")]
+    batch_mode = "--batch" in args
+    args = [a for a in args if a not in ("--pipe", "--schema", "--batch")]
 
     if schema_mode:
         print(json.dumps(TOOL_SCHEMA, indent=2))
         sys.exit(0)
 
+    if batch_mode:
+        queries = [line.rstrip("\n") for line in sys.stdin if line.strip()]
+        results = batch_lookup(queries)
+        for r in results:
+            print(json.dumps(r, separators=(",", ":")))
+        sys.exit(0)
+
     if not args:
-        print("Usage: lookup.py [--pipe] [--schema] <name|license_id|ubi>")
+        print("Usage: lookup.py [--pipe] [--batch] [--schema] <name|license_id|ubi>")
         print('  Human:  lookup.py "Acme Plumbing"')
         print('  Agent:  lookup.py --pipe "Acme Plumbing"')
+        print('  Batch:  printf "Acme Plumbing\\nMORTESL763NR\\n" | lookup.py --batch')
         print('  Schema: lookup.py --schema')
         print("")
         print("Actions:  found (exit 0) | pick (exit 1) | none (exit 1) | reject (exit 2)")
