@@ -1,0 +1,107 @@
+{
+  "name": "wa_contractor_license",
+  "description": "Look up Washington State contractor registration and license status via WA L&I. Accepts a business name, license ID (e.g. MORTESL763NR), or 9-digit UBI number. Returns action=found (match returned), action=pick (multiple matches \u2014 narrow the query), action=none (no match), or action=reject (bad input). Use this to verify that a contractor hired for work in WA has an active license, check for safety or contractor violations, or look up license details before hiring. Covers construction contractors, electricians, plumbers, HVAC, roofers, and all other WA-licensed contractor types.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Business name, license ID, or UBI. Examples: 'Acme Plumbing', 'MORTESL763NR', '605417027'. For name searches, partial names work but may return many results. License ID searches return exact matches only."
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "found",
+          "pick",
+          "none",
+          "refine",
+          "reject"
+        ],
+        "description": "found \u2014 license(s) returned, results[] is populated; pick \u2014 multiple matches, present to user or narrow query; none \u2014 no license found for this query; refine \u2014 network issue, retry; reject \u2014 bad input, don't retry"
+      },
+      "total_found": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "description": "Total matching records in L&I database (may exceed results[] length)."
+      },
+      "results": {
+        "type": "array",
+        "description": "Up to 25 matching contractors.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "license_id": {
+              "type": "string",
+              "description": "WA L&I license number"
+            },
+            "business_name": {
+              "type": "string"
+            },
+            "contractor_type": {
+              "type": "string",
+              "description": "e.g. Construction Contractor, Electrician"
+            },
+            "contractor_group": {
+              "type": "string",
+              "description": "e.g. Construction Contractor, Electrical"
+            },
+            "status": {
+              "type": "string",
+              "description": "Active | Expired | Inactive"
+            },
+            "city": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "ubi": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "WA Unified Business Identifier (9 digits)"
+            },
+            "violations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "List of violation types: 'safety' and/or 'contractor'"
+            },
+            "detail_url": {
+              "type": "string",
+              "description": "Link to full license detail on WA L&I"
+            }
+          }
+        }
+      },
+      "message": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action",
+      "message",
+      "results"
+    ]
+  },
+  "invocation": {
+    "command": "python3 lookup.py --pipe \"{query}\"",
+    "exit_codes": {
+      "0": "action=found \u2014 license verified, results[] populated",
+      "1": "action=pick/none/refine \u2014 multiple matches or no match",
+      "2": "action=reject \u2014 bad input, do not retry"
+    }
+  }
+}
