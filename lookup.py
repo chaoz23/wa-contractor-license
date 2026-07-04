@@ -38,7 +38,7 @@ def _detect_input_type(query: str) -> tuple[str, str]:
     """Return (search_cat, normalized_text).
 
     - UBI: 9 digits (with or without spaces/hyphens) -> searchCat=Ubi
-    - License ID: letters+digits+optional* -> searchCat=LicenseId
+    - License ID: compact identifier containing a digit or * -> searchCat=LicenseId
     - Anything else -> searchCat=Name
     """
     q = query.strip()
@@ -48,9 +48,13 @@ def _detect_input_type(query: str) -> tuple[str, str]:
     if re.fullmatch(r"\d{9}", digits_only):
         return "Ubi", digits_only
 
-    # License ID: typically 10-12 alphanumeric chars, may contain *
-    if re.fullmatch(r"[A-Z0-9*]{6,15}", q.upper()):
-        return "LicenseId", q.upper()
+    # Alphabetic terms are business names; WA license IDs include a digit or *.
+    normalized = q.upper()
+    if (
+        re.fullmatch(r"[A-Z0-9*]{6,15}", normalized)
+        and re.search(r"[0-9*]", normalized)
+    ):
+        return "LicenseId", normalized
 
     return "Name", q
 
@@ -130,6 +134,21 @@ def _lni_search(opener: urllib.request.OpenerDirector, search_cat: str, search_t
     return _do_search(opener, search_cat, search_text, page_size)
 
 
+def _search_with_name_fallback(
+    opener: urllib.request.OpenerDirector,
+    search_cat: str,
+    search_text: str,
+    query: str,
+) -> tuple[str, dict]:
+    """Search once, retrying a missing license ID as a business name."""
+    data = _do_search(opener, search_cat, search_text)
+    if search_cat == "LicenseId" and data.get("TotalCount", 0) == 0:
+        name_data = _do_search(opener, "Name", query)
+        if name_data.get("TotalCount", 0) > 0:
+            return "Name", name_data
+    return search_cat, data
+
+
 def _normalize_status(row: dict) -> str:
     """Map IrlStatusCode + Status to a human-readable status string."""
     code = row.get("IrlStatusCode", "") or ""
@@ -182,7 +201,10 @@ def lookup(query: str) -> dict:
 
     opener = _lni_session()
     try:
-        data = _lni_search(opener, search_cat, search_text)
+        _warmup_session(opener)
+        search_cat, data = _search_with_name_fallback(
+            opener, search_cat, search_text, query
+        )
     except Exception as e:
         return {
             "action": "refine",
@@ -214,7 +236,9 @@ def batch_lookup(queries: list[str]) -> list[dict]:
             continue
         search_cat, search_text = _detect_input_type(query)
         try:
-            data = _do_search(opener, search_cat, search_text)
+            search_cat, data = _search_with_name_fallback(
+                opener, search_cat, search_text, query
+            )
         except Exception as e:
             results.append({"action": "refine", "input": query, "message": f"Search failed: {e}", "results": []})
             continue
