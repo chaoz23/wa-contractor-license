@@ -273,6 +273,15 @@ def _build_result(query: str, search_cat: str, data: dict) -> dict:
 
 EXIT_CODES = {"found": 0, "pick": 1, "none": 1, "refine": 1, "reject": 2}
 
+
+def _batch_exit_code(results: list[dict]) -> int:
+    """Return the highest-severity exit code across batch results."""
+    return max(
+        (EXIT_CODES.get(result.get("action"), 1) for result in results),
+        default=0,
+    )
+
+
 TOOL_SCHEMA = {
     "name": "wa_contractor_license",
     "description": (
@@ -372,7 +381,7 @@ def main():
         results = batch_lookup(queries)
         for r in results:
             print(json.dumps(r, separators=(",", ":")))
-        sys.exit(0)
+        sys.exit(_batch_exit_code(results))
 
     if not args:
         print("Usage: lookup.py [--pipe] [--batch] [--schema] <name|license_id|ubi>")
