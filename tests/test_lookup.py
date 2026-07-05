@@ -1,4 +1,7 @@
+import io
+import json
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import ANY, Mock, call, patch
 
 import lookup
@@ -73,6 +76,44 @@ class LookupTests(unittest.TestCase):
         do_search.assert_called_once_with(opener, "Name", "plumbing")
         self.assertEqual(result["action"], "none")
         self.assertEqual(result["search_type"], "Name")
+
+
+class BatchExitCodeTests(unittest.TestCase):
+    def test_all_found_or_empty_batch_succeeds(self):
+        self.assertEqual(lookup._batch_exit_code([]), 0)
+        self.assertEqual(lookup._batch_exit_code([{"action": "found"}]), 0)
+
+    def test_non_matches_and_retryable_errors_exit_one(self):
+        for action in ("pick", "none", "refine"):
+            with self.subTest(action=action):
+                self.assertEqual(lookup._batch_exit_code([{"action": action}]), 1)
+
+    def test_reject_takes_precedence(self):
+        results = [{"action": "refine"}, {"action": "reject"}]
+        self.assertEqual(lookup._batch_exit_code(results), 2)
+
+    @patch("lookup.batch_lookup")
+    def test_batch_cli_emits_every_result_before_nonzero_exit(self, batch_lookup):
+        results = [
+            {"action": "found", "input": "Acme", "results": [{}]},
+            {"action": "reject", "input": "A", "results": []},
+        ]
+        batch_lookup.return_value = results
+        output = io.StringIO()
+
+        with (
+            patch.object(lookup.sys, "argv", ["lookup.py", "--batch"]),
+            patch.object(lookup.sys, "stdin", io.StringIO("Acme\nA\n")),
+            redirect_stdout(output),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            lookup.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(
+            [json.loads(line) for line in output.getvalue().splitlines()],
+            results,
+        )
 
 
 if __name__ == "__main__":

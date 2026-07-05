@@ -63,6 +63,10 @@ Per result: `license_id`, `business_name`, `contractor_type`, `contractor_group`
 | 1 | `pick` / `none` / `refine` | Multiple matches or no match |
 | 2 | `reject` | Bad input — do not retry without changing query |
 
+Batch mode emits every NDJSON result, then exits with the highest-severity code
+across the batch. For example, any `reject` makes the batch exit `2`; otherwise
+any `pick`, `none`, or `refine` makes it exit `1`. An empty batch exits `0`.
+
 ## Coverage
 
 All WA-licensed contractor types:
