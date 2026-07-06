@@ -65,7 +65,11 @@ Per result: `license_id`, `business_name`, `contractor_type`, `contractor_group`
 
 Batch mode emits every NDJSON result, then exits with the highest-severity code
 across the batch. For example, any `reject` makes the batch exit `2`; otherwise
-any `pick`, `none`, or `refine` makes it exit `1`. An empty batch exits `0`.
+any `pick`, `none`, or `refine` makes it exit `1`. It emits one result for every
+stdin line in the same order; blank or one-character lines are explicit
+`reject` results. Input validation happens before L&I is contacted, and a batch
+containing only invalid inputs performs no network requests. An empty batch
+exits `0`.
 
 ## Coverage
 

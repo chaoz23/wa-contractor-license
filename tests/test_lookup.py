@@ -78,6 +78,41 @@ class LookupTests(unittest.TestCase):
         self.assertEqual(result["search_type"], "Name")
 
 
+class BatchLookupTests(unittest.TestCase):
+    @patch("lookup._warmup_session")
+    @patch("lookup._lni_session")
+    def test_all_invalid_batch_skips_network(self, lni_session, warmup_session):
+        results = lookup.batch_lookup(["", " A "])
+
+        self.assertEqual(
+            [result["action"] for result in results],
+            ["reject", "reject"],
+        )
+        self.assertEqual([result["input"] for result in results], ["", "A"])
+        lni_session.assert_not_called()
+        warmup_session.assert_not_called()
+
+    @patch("lookup._warmup_session", side_effect=OSError("offline"))
+    @patch("lookup._lni_session")
+    def test_invalid_inputs_remain_rejected_when_warmup_fails(
+        self, lni_session, warmup_session
+    ):
+        opener = Mock()
+        lni_session.return_value = opener
+
+        results = lookup.batch_lookup([" A ", "Acme Plumbing"])
+
+        self.assertEqual(
+            [result["action"] for result in results],
+            ["reject", "refine"],
+        )
+        self.assertEqual(
+            [result["input"] for result in results],
+            ["A", "Acme Plumbing"],
+        )
+        warmup_session.assert_called_once_with(opener)
+
+
 class BatchExitCodeTests(unittest.TestCase):
     def test_all_found_or_empty_batch_succeeds(self):
         self.assertEqual(lookup._batch_exit_code([]), 0)
@@ -113,6 +148,33 @@ class BatchExitCodeTests(unittest.TestCase):
         self.assertEqual(
             [json.loads(line) for line in output.getvalue().splitlines()],
             results,
+        )
+
+    @patch("lookup._warmup_session", side_effect=OSError("offline"))
+    @patch("lookup._lni_session")
+    def test_batch_cli_preserves_blank_lines_and_validation_order(
+        self, lni_session, warmup_session
+    ):
+        lni_session.return_value = Mock()
+        output = io.StringIO()
+
+        with (
+            patch.object(lookup.sys, "argv", ["lookup.py", "--batch"]),
+            patch.object(lookup.sys, "stdin", io.StringIO("A\n\nAcme Plumbing\n")),
+            redirect_stdout(output),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            lookup.main()
+
+        results = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(raised.exception.code, 2)
+        self.assertEqual(
+            [result["action"] for result in results],
+            ["reject", "reject", "refine"],
+        )
+        self.assertEqual(
+            [result["input"] for result in results],
+            ["A", "", "Acme Plumbing"],
         )
 
 
