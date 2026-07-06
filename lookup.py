@@ -365,12 +365,28 @@ TOOL_SCHEMA = {
 }
 
 
+def _usage():
+    print("Usage: lookup.py [--pipe] [--batch] [--schema] <name|license_id|ubi>")
+    print('  Human:  lookup.py "Acme Plumbing"')
+    print('  Agent:  lookup.py --pipe "Acme Plumbing"')
+    print('  Batch:  printf "Acme Plumbing\\nMORTESL763NR\\n" | lookup.py --batch')
+    print('  Schema: lookup.py --schema')
+    print("")
+    print("Actions:  found (exit 0) | pick (exit 1) | none (exit 1) | reject (exit 2)")
+
+
 def main():
     args = sys.argv[1:]
     pipe_mode = "--pipe" in args
     schema_mode = "--schema" in args
     batch_mode = "--batch" in args
-    args = [a for a in args if a not in ("--pipe", "--schema", "--batch")]
+    help_mode = "-h" in args or "--help" in args
+    args = [a for a in args
+            if a not in ("--pipe", "--schema", "--batch", "-h", "--help")]
+
+    if help_mode:
+        _usage()
+        sys.exit(0)
 
     if schema_mode:
         print(json.dumps(TOOL_SCHEMA, indent=2))
@@ -384,13 +400,7 @@ def main():
         sys.exit(_batch_exit_code(results))
 
     if not args:
-        print("Usage: lookup.py [--pipe] [--batch] [--schema] <name|license_id|ubi>")
-        print('  Human:  lookup.py "Acme Plumbing"')
-        print('  Agent:  lookup.py --pipe "Acme Plumbing"')
-        print('  Batch:  printf "Acme Plumbing\\nMORTESL763NR\\n" | lookup.py --batch')
-        print('  Schema: lookup.py --schema')
-        print("")
-        print("Actions:  found (exit 0) | pick (exit 1) | none (exit 1) | reject (exit 2)")
+        _usage()
         sys.exit(2)
 
     query = " ".join(args)
