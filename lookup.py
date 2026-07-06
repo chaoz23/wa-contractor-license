@@ -222,28 +222,54 @@ def batch_lookup(queries: list[str]) -> list[dict]:
     Saves 3 round-trips per query after the first. Reads from a list;
     CLI --batch mode reads from stdin. Each result includes the input query.
     """
-    opener = _lni_session()
+    normalized_queries = [query.strip() for query in queries]
+    results_by_index = {}
+    valid_queries = []
+
+    for index, query in enumerate(normalized_queries):
+        if not query or len(query) < 2:
+            results_by_index[index] = {
+                "action": "reject",
+                "input": query,
+                "message": "Query must be at least 2 characters.",
+                "results": [],
+            }
+        else:
+            valid_queries.append((index, query))
+
+    if not valid_queries:
+        return [results_by_index[index] for index in range(len(queries))]
+
     try:
+        opener = _lni_session()
         _warmup_session(opener)
     except Exception as e:
-        return [{"action": "refine", "input": q, "message": f"Could not reach WA L&I: {e}", "results": []} for q in queries]
+        for index, query in valid_queries:
+            results_by_index[index] = {
+                "action": "refine",
+                "input": query,
+                "message": f"Could not reach WA L&I: {e}",
+                "results": [],
+            }
+        return [results_by_index[index] for index in range(len(queries))]
 
-    results = []
-    for query in queries:
-        query = query.strip()
-        if not query or len(query) < 2:
-            results.append({"action": "reject", "input": query, "message": "Query must be at least 2 characters.", "results": []})
-            continue
+    for index, query in valid_queries:
         search_cat, search_text = _detect_input_type(query)
         try:
             search_cat, data = _search_with_name_fallback(
                 opener, search_cat, search_text, query
             )
         except Exception as e:
-            results.append({"action": "refine", "input": query, "message": f"Search failed: {e}", "results": []})
+            results_by_index[index] = {
+                "action": "refine",
+                "input": query,
+                "message": f"Search failed: {e}",
+                "results": [],
+            }
             continue
-        results.append(_build_result(query, search_cat, data))
-    return results
+        results_by_index[index] = _build_result(query, search_cat, data)
+
+    return [results_by_index[index] for index in range(len(queries))]
 
 
 def _build_result(query: str, search_cat: str, data: dict) -> dict:
@@ -393,7 +419,7 @@ def main():
         sys.exit(0)
 
     if batch_mode:
-        queries = [line.rstrip("\n") for line in sys.stdin if line.strip()]
+        queries = [line.rstrip("\n") for line in sys.stdin]
         results = batch_lookup(queries)
         for r in results:
             print(json.dumps(r, separators=(",", ":")))
