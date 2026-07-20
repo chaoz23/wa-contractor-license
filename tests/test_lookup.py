@@ -78,6 +78,77 @@ class LookupTests(unittest.TestCase):
         self.assertEqual(result["search_type"], "Name")
 
 
+class ResultFilteringTests(unittest.TestCase):
+    def test_non_license_rows_are_excluded_from_pick_results(self):
+        data = {
+            "TotalCount": 3,
+            "SearchResult": [
+                {
+                    "LicenseId": None,
+                    "BusinessName": "ORDINARY BUSINESS RECORD",
+                    "ContractorType": None,
+                    "ContractorGroup": None,
+                    "Status": "Active",
+                },
+                {
+                    "LicenseId": "MORTESL763NR",
+                    "BusinessName": "MORTENSON SIGNS, LLC",
+                    "ContractorType": "Construction Contractor",
+                    "ContractorGroup": "Construction Contractor",
+                    "IrlStatusCode": "A",
+                },
+            ],
+        }
+
+        result = lookup._build_result("morris", "Name", data)
+
+        self.assertEqual(result["action"], "pick")
+        self.assertEqual(result["total_found"], 3)
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["license_id"], "MORTESL763NR")
+        self.assertIn("L&I record", result["message"])
+        self.assertIn("contractor/license record", result["message"])
+
+    def test_only_non_license_rows_are_reported_as_no_license_match(self):
+        data = {
+            "TotalCount": 1,
+            "SearchResult": [
+                {
+                    "LicenseId": None,
+                    "BusinessName": "WASHINGTON FEDERAL BANK",
+                    "ContractorType": None,
+                    "ContractorGroup": None,
+                    "Status": "Active",
+                }
+            ],
+        }
+
+        result = lookup._build_result("washington federal", "Name", data)
+
+        self.assertEqual(result["action"], "none")
+        self.assertEqual(result["total_found"], 1)
+        self.assertEqual(result["results"], [])
+        self.assertIn("none were contractor/license records", result["message"])
+
+    def test_nullable_fields_format_as_contract_strings(self):
+        row = {
+            "LicenseId": "MORTESL763NR",
+            "BusinessName": None,
+            "ContractorType": "Construction Contractor",
+            "ContractorGroup": "Construction Contractor",
+            "City": None,
+            "State": None,
+            "Ubi": None,
+        }
+
+        result = lookup._format_result(row)
+
+        self.assertEqual(result["business_name"], "")
+        self.assertEqual(result["city"], "")
+        self.assertEqual(result["state"], "")
+        self.assertIsNone(result["ubi"])
+
+
 class BatchLookupTests(unittest.TestCase):
     @patch("lookup._warmup_session")
     @patch("lookup._lni_session")

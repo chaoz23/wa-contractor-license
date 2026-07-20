@@ -40,7 +40,7 @@ python3 lookup.py --schema                     # print tool definition
 |---|---|
 | `action` | `found` (match), `pick` (multiple — narrow query), `none` (no match), `refine` (network issue), `reject` (bad input) |
 | `results` | Up to 25 matching contractors |
-| `total_found` | Total records in L&I database (may exceed 25) |
+| `total_found` | Raw total records returned by L&I (may exceed `results[]`; non-license business rows are filtered out) |
 
 Per result: `license_id`, `business_name`, `contractor_type`, `contractor_group`, `status` (Active/Expired/Inactive), `city`, `state`, `ubi`, `violations` (array: `"safety"`, `"contractor"`), `detail_url`.
 
