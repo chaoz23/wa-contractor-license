@@ -162,6 +162,18 @@ def _normalize_status(row: dict) -> str:
     return status or "Unknown"
 
 
+def _clean_string(value) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _is_license_row(row: dict) -> bool:
+    """Return True for rows that identify an actual L&I license record."""
+    return bool(
+        _clean_string(row.get("LicenseId"))
+        and (_clean_string(row.get("ContractorType")) or _clean_string(row.get("ContractorGroup")))
+    )
+
+
 def _format_result(row: dict) -> dict:
     violations = []
     if row.get("HasSafetyViolation"):
@@ -169,20 +181,22 @@ def _format_result(row: dict) -> dict:
     if row.get("HasContractorViolation"):
         violations.append("contractor")
 
+    license_id = _clean_string(row.get("LicenseId"))
+    contractor_group = _clean_string(row.get("ContractorGroup"))
     return {
-        "license_id": row.get("LicenseId", ""),
-        "business_name": row.get("BusinessName", ""),
-        "contractor_type": row.get("ContractorType", ""),
-        "contractor_group": row.get("ContractorGroup", ""),
+        "license_id": license_id,
+        "business_name": _clean_string(row.get("BusinessName")),
+        "contractor_type": _clean_string(row.get("ContractorType")),
+        "contractor_group": contractor_group,
         "status": _normalize_status(row),
-        "city": row.get("City", ""),
-        "state": row.get("State", ""),
-        "ubi": row.get("Ubi", "") or None,
+        "city": _clean_string(row.get("City")),
+        "state": _clean_string(row.get("State")),
+        "ubi": _clean_string(row.get("Ubi")) or None,
         "violations": violations,
         "detail_url": (
             f"https://secure.lni.wa.gov/verify/Detail.aspx"
-            f"?LicenseType={urllib.parse.quote(str(row.get('ContractorGroup') or ''))}"
-            f"&LicenseNumber={urllib.parse.quote(str(row.get('LicenseId') or ''))}"
+            f"?LicenseType={urllib.parse.quote(contractor_group)}"
+            f"&LicenseNumber={urllib.parse.quote(license_id)}"
         ),
     }
 
@@ -276,13 +290,27 @@ def _build_result(query: str, search_cat: str, data: dict) -> dict:
     """Build the lookup() result dict from raw API data (shared by single + batch paths)."""
     total = data.get("TotalCount", 0)
     rows = data.get("SearchResult", [])
+    license_rows = [row for row in rows if _is_license_row(row)]
 
     if total == 0:
         return {"action": "none", "message": f"No WA contractor/license found for '{query}'.", "input": query, "search_type": search_cat, "results": []}
 
-    results = [_format_result(r) for r in rows]
+    results = [_format_result(r) for r in license_rows]
 
-    if search_cat in ("LicenseId", "Ubi") and total == 1:
+    if not results:
+        return {
+            "action": "none",
+            "message": (
+                f"L&I returned {total} record(s) for '{query}', but none were "
+                "contractor/license records. Refine with a business name, license_id, or UBI."
+            ),
+            "input": query,
+            "search_type": search_cat,
+            "total_found": total,
+            "results": [],
+        }
+
+    if search_cat in ("LicenseId", "Ubi") and len(results) == 1:
         r = results[0]
         return {"action": "found", "message": f"{r['business_name']} — {r['contractor_type']} — {r['status']}", "input": query, "search_type": search_cat, "total_found": total, "results": results}
 
@@ -294,7 +322,17 @@ def _build_result(query: str, search_cat: str, data: dict) -> dict:
             return {"action": "found", "message": f"{r['business_name']} — {r['contractor_type']} — {r['status']}", "input": query, "search_type": search_cat, "total_found": total, "results": exact}
 
     showing = min(len(results), 25)
-    return {"action": "pick", "message": f"Found {total} contractors matching '{query}'. Showing {showing}. Refine with a more specific name or use license_id.", "input": query, "search_type": search_cat, "total_found": total, "results": results}
+    return {
+        "action": "pick",
+        "message": (
+            f"Found {total} L&I record(s) matching '{query}'. Showing {showing} "
+            "contractor/license record(s). Refine with a more specific name or use license_id."
+        ),
+        "input": query,
+        "search_type": search_cat,
+        "total_found": total,
+        "results": results,
+    }
 
 
 EXIT_CODES = {"found": 0, "pick": 1, "none": 1, "refine": 1, "reject": 2}
