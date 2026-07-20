@@ -118,4 +118,4 @@ else:
 
 ## License
 
-MIT
+[MIT](LICENSE)
